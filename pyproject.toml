@@ -1,0 +1,9 @@
+[project]
+name = "occupancy-forecast"
+version = "0.1.0"
+description = "MMA3001 project: short-horizon room headcount forecasting from building occupancy sensors"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
