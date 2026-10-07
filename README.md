@@ -38,5 +38,19 @@ pytest
 - Occupancy data comes from a single hub device covering 5 floor spaces.
 - Only 2 of 5 occupancy floor spaces and 1 of 5 environmental sensors appear in the location lookup, and the two sets share no room.
 
+## Data cleaning decisions
+Raw occupancy covers only 36-58% of the 5-minute grid per room, and gaps cluster overnight and at weekends, so the hub appears to go quiet when a room is empty. `src/occupancy_forecast/cleaning.py` therefore:
+- caps spikes more than 5 people above a rolling median (0.19% of observed bins), keeping the raw value;
+- interpolates gaps up to 15 minutes;
+- fills gaps up to 1 day with 0 people when the preceding headcount was 0.5 or less (`assumed_empty`, 27-43% of bins per room);
+- leaves all other gaps missing (about 10% of bins) and excludes them from training.
+
+The `assumed_empty` rule is an inference, not a measurement: there is no ground truth for why the hub is quiet.
+
+## Planned sensitivity tests
+- `quiet_threshold` set to 0.5, 1.0 and 2.0 people.
+- Results with and without `assumed_empty` bins.
+- Bin width of 1, 5 and 15 minutes.
+
 ## Licence
 MIT (see LICENSE). Data is not covered by this licence.
