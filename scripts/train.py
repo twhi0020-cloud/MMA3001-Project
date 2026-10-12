@@ -49,7 +49,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--horizon", type=int, default=30, help="forecast horizon in minutes")
     p.add_argument("--bin-minutes", type=int, default=5)
     p.add_argument("--depths", type=int, nargs="+", default=[2, 4, 6, 8, 10, 12, 16, 20])
-    p.add_argument("--leaves", type=int, nargs="+", default=[1, 10, 50, 200])
+    p.add_argument("--leaves", type=int, nargs="+", default=[1, 10, 50, 200, 500, 1000])
     p.add_argument("--cache-dir", type=Path, default=ROOT / "data/processed",
                    help="where the resampled table is cached (git-ignored)")
     p.add_argument("--results-dir", type=Path, default=ROOT / "results")
