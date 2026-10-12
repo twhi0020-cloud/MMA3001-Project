@@ -236,3 +236,22 @@ def test_cleaning_summary_shares_sum_to_one_and_count_spikes():
 def test_cleaning_summary_missing_column_raises():
     with pytest.raises(ValueError, match="missing required columns"):
         cleaning_summary(pd.DataFrame({"floorspaceid": ["A"]}))
+
+
+def test_max_quiet_bins_zero_switches_off_zero_fill():
+    values = [0.2] + [np.nan] * 10 + [3.0]
+    on = _filled(values)
+    off = _filled(values, max_quiet_bins=0)
+    assert (on.loc[1:10, "fill_status"] == FILL_ASSUMED_EMPTY).all()
+    assert (off.loc[1:10, "fill_status"] == FILL_MISSING).all()
+    # short gaps are still interpolated when the zero-fill rule is off
+    short = _filled([1.0, np.nan, 3.0], max_quiet_bins=0)
+    assert short["fill_status"].tolist() == [FILL_OBSERVED, FILL_INTERPOLATED, FILL_OBSERVED]
+
+
+def test_max_quiet_bins_rejects_negative_and_non_integer():
+    g = _grid([1.0, 2.0])
+    g["headcount_capped"] = g["mean_headcount_raw"]
+    for bad in (-1, 2.5, True):
+        with pytest.raises(ValueError):
+            fill_gaps(g, max_quiet_bins=bad)
