@@ -6,6 +6,7 @@ import pytest
 
 from occupancy_forecast.experiments import (
     METHODS,
+    SPLINE_COLUMNS,
     ConditionResult,
     compare_conditions,
     reference_boundaries,
@@ -111,3 +112,42 @@ def test_run_condition_raises_when_nothing_is_usable():
     tiny = pd.DataFrame({"floorspaceid": "A", "timestamp": ts, "mean_headcount": 1.0, "n_obs": 3})
     with pytest.raises(ValueError, match="empty"):
         run_condition(tiny, "tiny", **FAST)
+
+
+# ---------- spline integration ----------
+
+def test_run_condition_with_splines_adds_all_spline_predictions():
+    res = run_condition(_binned(), "sp", splines=True, **FAST)
+    for col in SPLINE_COLUMNS:
+        assert f"pred_{col}" in res.val.columns and not res.val[f"pred_{col}"].isna().any()
+        assert (res.val[f"pred_{col}"] >= 0).all()
+    assert res.spline_diagnostics is not None
+    assert set(res.spline_diagnostics["method"]) == {"linear", "cubic", "pchip", "akima", "smoothing"}
+    assert "splines" in res.seconds
+    # synthetic noise is independent over time, so there is no persistence to find: phi ~ 0
+    assert res.spline_phi is not None and abs(res.spline_phi) < 0.3
+    plain = run_condition(_binned(), "plain", **FAST)
+    assert plain.spline_diagnostics is None and plain.spline_phi is None
+    assert "pred_spline_hybrid" not in plain.val.columns
+
+
+def test_compare_conditions_can_score_spline_methods_on_identical_rows():
+    res = run_condition(_binned(), "sp", splines=True, **FAST)
+    table = compare_conditions([res], methods=METHODS + SPLINE_COLUMNS)
+    assert set(table.index.get_level_values("method")) == set(METHODS + SPLINE_COLUMNS)
+    assert table["n"].nunique() == 1
+    with pytest.raises(ValueError, match="no predictions for"):
+        compare_conditions([run_condition(_binned(), "plain", **FAST)], methods=["spline_hybrid"])
+
+
+def test_fit_tree_false_skips_tuning_and_still_scores_other_methods():
+    res = run_condition(_binned(), "fast", fit_tree=False, splines=True)
+    assert "pred_decision_tree" not in res.val.columns and res.tuning.empty and res.best_params == {}
+    table = compare_conditions([res], methods=["persistence", "spline_smoothing", "spline_hybrid"])
+    assert len(table) == 3
+
+
+def test_spline_config_reaches_the_profiles():
+    a = run_condition(_binned(), "a", fit_tree=False, splines=True, spline_config={"slot_minutes": 15})
+    b = run_condition(_binned(), "b", fit_tree=False, splines=True, spline_config={"slot_minutes": 60})
+    assert not np.allclose(a.val["pred_spline_smoothing"], b.val["pred_spline_smoothing"])
