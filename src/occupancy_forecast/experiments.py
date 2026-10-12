@@ -37,6 +37,7 @@ from occupancy_forecast.models import (
     predict_persistence,
     tune_decision_tree,
 )
+from occupancy_forecast.splines import SPLINE_METHODS, SplineAnomalyForecaster, SplineProfile
 from occupancy_forecast.validation import (
     chronological_split,
     compare_predictions,
@@ -44,6 +45,7 @@ from occupancy_forecast.validation import (
 )
 
 METHODS = ["persistence", "same_time_last_week", "seasonal_average", "linear_regression", "decision_tree"]
+SPLINE_COLUMNS = [f"spline_{m}" for m in SPLINE_METHODS] + ["spline_hybrid"]
 KEY = ["floorspaceid", "timestamp"]
 
 
@@ -61,7 +63,13 @@ class ConditionResult:
         tuning: Tuning table from :func:`occupancy_forecast.models.tune_decision_tree`.
         val: One row per validation example with ``floorspaceid``, ``timestamp``,
             ``target``, ``target_fill_status`` and a ``pred_<method>`` column per method.
-        seconds: Wall-clock seconds per stage (``clean``, ``features``, ``tuning``).
+        seconds: Wall-clock seconds per stage (``clean``, ``features``, ``tuning`` and, if
+            splines were fitted, ``splines``).
+        spline_diagnostics: Per-curve summaries (including each curve's minimum) for every
+            spline method, or ``None`` if splines were not fitted.
+        spline_phi: Fitted persistence fraction ``phi`` of the spline hybrid (how much of the
+            current deviation from the normal profile is expected to remain at the target
+            time), or ``None`` if splines were not fitted.
     """
 
     name: str
@@ -73,6 +81,8 @@ class ConditionResult:
     tuning: pd.DataFrame
     val: pd.DataFrame
     seconds: dict = field(default_factory=dict)
+    spline_diagnostics: pd.DataFrame | None = None
+    spline_phi: float | None = None
 
 
 def scaled_clean_kwargs(bin_minutes: int, **overrides) -> dict:
@@ -143,6 +153,9 @@ def run_condition(
     depths: tuple = (6, 8, 10, 12),
     leaves: tuple = (50, 200),
     tolerance: float = 0.005,
+    splines: bool = False,
+    spline_config: dict | None = None,
+    fit_tree: bool = True,
 ) -> ConditionResult:
     """Clean, build features, split, fit all methods and return validation predictions.
 
@@ -157,6 +170,12 @@ def run_condition(
         depths: ``max_depth`` values for tree tuning.
         leaves: ``min_samples_leaf`` values for tree tuning.
         tolerance: Simplest-tree tolerance (see ``tune_decision_tree``).
+        splines: Also fit the time-of-day spline profiles and the spline hybrid, adding
+            ``pred_spline_<method>`` and ``pred_spline_hybrid`` columns.
+        spline_config: Options for :class:`~occupancy_forecast.splines.SplineProfile`
+            (``slot_minutes``, ``day_grouping``); the key ``hybrid_method`` (default
+            ``"smoothing"``) picks the spline used inside the hybrid.
+        fit_tree: If ``False``, skip tree tuning (faster; no ``pred_decision_tree`` column).
 
     Returns:
         A :class:`ConditionResult`. The test set is not evaluated.
@@ -180,8 +199,11 @@ def run_condition(
     t0 = perf_counter()
     seasonal = SeasonalAverage().fit(train)
     linear = fit_linear(train, features)
-    tuning, best = tune_decision_tree(train, val, features, list(depths), list(leaves), tolerance=tolerance)
-    tree = fit_decision_tree(train, features, **best)
+    if fit_tree:
+        tuning, best = tune_decision_tree(train, val, features, list(depths), list(leaves), tolerance=tolerance)
+        tree = fit_decision_tree(train, features, **best)
+    else:
+        tuning, best, tree = pd.DataFrame(), {}, None
     seconds["tuning"] = perf_counter() - t0
 
     out = val[KEY + ["target", "target_fill_status"]].reset_index(drop=True)
@@ -189,15 +211,33 @@ def run_condition(
     out["pred_same_time_last_week"] = predict_last_week(val)
     out["pred_seasonal_average"] = seasonal.predict(val)
     out["pred_linear_regression"] = linear.predict(val[features])
-    out["pred_decision_tree"] = tree.predict(val[features])
+    if tree is not None:
+        out["pred_decision_tree"] = tree.predict(val[features])
+
+    diagnostics, phi = None, None
+    if splines:
+        t0 = perf_counter()
+        cfg = dict(spline_config or {})
+        hybrid_method = cfg.pop("hybrid_method", "smoothing")
+        diag_parts = []
+        for m in SPLINE_METHODS:
+            profile = SplineProfile(m, **cfg).fit(train)
+            out[f"pred_spline_{m}"] = profile.predict(val)
+            diag_parts.append(profile.diagnostics().assign(method=m))
+        hybrid = SplineAnomalyForecaster(method=hybrid_method, **cfg).fit(train)
+        out["pred_spline_hybrid"] = hybrid.predict(val)
+        phi = hybrid.phi_
+        diagnostics = pd.concat(diag_parts, ignore_index=True)
+        seconds["splines"] = perf_counter() - t0
 
     return ConditionResult(
         name=name, bin_minutes=bin_minutes, horizon_minutes=horizon_minutes,
         n_train=len(train), n_val=len(val), best_params=best, tuning=tuning, val=out, seconds=seconds,
+        spline_diagnostics=diagnostics, spline_phi=phi,
     )
 
 
-def compare_conditions(results: list, observed_only: bool = True) -> pd.DataFrame:
+def compare_conditions(results: list, observed_only: bool = True, methods: list | None = None) -> pd.DataFrame:
     """Score every method in every condition on the identical validation rows.
 
     Only rows present in *all* conditions (and with a prediction from every method) are
@@ -209,18 +249,26 @@ def compare_conditions(results: list, observed_only: bool = True) -> pd.DataFram
         results: Conditions from :func:`run_condition` (all with the same horizon and bin
             width, otherwise the targets differ and the comparison is meaningless).
         observed_only: Keep only rows whose ``target_fill_status`` is ``observed``.
+        methods: Methods to score (names without the ``pred_`` prefix). Defaults to
+            :data:`METHODS`; pass e.g. ``METHODS + SPLINE_COLUMNS`` for spline conditions.
 
     Returns:
         DataFrame with a ``(condition, method)`` index and columns ``mae``, ``rmse``, ``n``.
 
     Raises:
         ValueError: If ``results`` is empty, the conditions differ in horizon or bin width,
-            or no rows are common to all conditions.
+            a requested method is missing from a condition, or no rows are common to all
+            conditions.
     """
     if not results:
         raise ValueError("results must contain at least one condition")
     if len({(r.horizon_minutes, r.bin_minutes) for r in results}) > 1:
         raise ValueError("conditions must share the same horizon and bin width to be compared on identical rows")
+    methods = list(methods) if methods else list(METHODS)
+    for r in results:
+        absent = [m for m in methods if f"pred_{m}" not in r.val.columns]
+        if absent:
+            raise ValueError(f"condition {r.name!r} has no predictions for: {absent}")
 
     frames = []
     for r in results:
@@ -234,7 +282,7 @@ def compare_conditions(results: list, observed_only: bool = True) -> pd.DataFram
     if len(common) == 0:
         raise ValueError("no validation rows are common to all conditions")
 
-    pred_cols = [f"pred_{m}" for m in METHODS]
+    pred_cols = [f"pred_{m}" for m in methods]
     aligned = [f.loc[common] for f in frames]
     # A row is used only if every method has a prediction in *every* condition; otherwise
     # conditions would silently be scored on different rows.
@@ -247,8 +295,8 @@ def compare_conditions(results: list, observed_only: bool = True) -> pd.DataFram
     rows = {}
     for r, f in zip(results, aligned):
         f = f[valid]
-        table = compare_predictions(f["target"].to_numpy(), {m: f[f"pred_{m}"].to_numpy() for m in METHODS})
-        for method in METHODS:
+        table = compare_predictions(f["target"].to_numpy(), {m: f[f"pred_{m}"].to_numpy() for m in methods})
+        for method in methods:
             rows[(r.name, method)] = table.loc[method]
     out = pd.DataFrame(rows).T
     out.index.names = ["condition", "method"]
