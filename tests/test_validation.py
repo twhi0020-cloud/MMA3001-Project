@@ -8,6 +8,7 @@ from occupancy_forecast.validation import (
     chronological_split,
     compare_predictions,
     regression_metrics,
+    split_boundaries,
 )
 
 T0 = pd.Timestamp("2024-03-04 00:00:00")
@@ -96,3 +97,41 @@ def test_compare_predictions_errors():
         compare_predictions([1, 2], {"a": [1]})
     with pytest.raises(ValueError, match="no rows"):
         compare_predictions([1, 2], {"a": [np.nan, np.nan]})
+
+
+# ---------- split_boundaries / reusing boundaries ----------
+
+def test_boundaries_reproduce_the_same_split():
+    ds = _dataset()
+    bounds = split_boundaries(ds)
+    assert set(bounds) == {"A", "B"} and all(b1 < b2 for b1, b2 in bounds.values())
+    default = chronological_split(ds)
+    reused = chronological_split(ds, boundaries=bounds)
+    for a, b in zip(default, reused):
+        pd.testing.assert_frame_equal(a, b)
+
+
+def test_boundaries_keep_validation_window_fixed_when_rows_are_removed():
+    ds = _dataset(rooms=("A",), n=1000)
+    bounds = split_boundaries(ds)
+    thinned = ds.drop(index=range(100, 300))            # a differently prepared dataset
+    own = chronological_split(thinned)[1]
+    fixed = chronological_split(thinned, boundaries=bounds)[1]
+    b1, b2 = bounds["A"]
+    assert fixed["timestamp"].min() >= b1 and fixed["target_timestamp"].max() < b2
+    assert own["timestamp"].min() != b1                 # without reuse, the window would drift
+
+
+def test_boundaries_missing_room_raises():
+    ds = _dataset()
+    bounds = split_boundaries(ds)
+    del bounds["B"]
+    with pytest.raises(ValueError, match="no entry"):
+        chronological_split(ds, boundaries=bounds)
+
+
+def test_split_boundaries_validates_inputs():
+    with pytest.raises(ValueError):
+        split_boundaries(_dataset(rooms=("A",), n=20), fractions=(0.5, 0.5))
+    with pytest.raises(ValueError, match="missing required columns"):
+        split_boundaries(pd.DataFrame({"floorspaceid": ["A"]}))

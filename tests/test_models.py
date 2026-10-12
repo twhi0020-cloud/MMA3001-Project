@@ -82,7 +82,7 @@ def test_linear_fit_recovers_exact_relationship():
 
 def test_tuning_returns_table_and_best_has_lowest_validation_rmse():
     train, val = _seasonal_df(800, seed=1), _seasonal_df(300, seed=2)
-    results, best = tune_decision_tree(train, val, FEATURES, [1, 2, 4, None], [1, 20])
+    results, best = tune_decision_tree(train, val, FEATURES, [1, 2, 4, None], [1, 20], tolerance=0.0)
     assert {"max_depth", "min_samples_leaf", "n_leaves", "train_rmse", "val_rmse", "val_mae", "fit_seconds"} <= set(results.columns)
     assert len(results) == 8
     chosen = results[(results["max_depth"].fillna(-1) == (-1 if best["max_depth"] is None else best["max_depth"]))
@@ -125,3 +125,23 @@ def test_permutation_importance_ranks_the_informative_feature_first():
     assert list(table.columns) == ["feature", "rmse_increase", "rmse_increase_std"]
     with pytest.raises(ValueError):
         permutation_importance_table(model, val.iloc[0:0], FEATURES)
+
+
+def test_tolerance_picks_fewest_leaves_within_noise_of_the_best():
+    train, val = _seasonal_df(800, seed=1), _seasonal_df(300, seed=2)
+    strict, _ = tune_decision_tree(train, val, FEATURES, [1, 3, 6, None], [1, 5], tolerance=0.0)
+    loose, best = tune_decision_tree(train, val, FEATURES, [1, 3, 6, None], [1, 5], tolerance=0.05)
+    pick_strict = strict[strict["selected"]].iloc[0]
+    pick_loose = loose[loose["selected"]].iloc[0]
+    assert strict["selected"].sum() == 1 and loose["selected"].sum() == 1
+    assert pick_strict["val_rmse"] == pytest.approx(strict["val_rmse"].min())
+    assert pick_loose["n_leaves"] <= pick_strict["n_leaves"]
+    assert pick_loose["val_rmse"] <= loose["val_rmse"].min() * 1.05 + 1e-12
+    eligible = loose[loose["val_rmse"] <= loose["val_rmse"].min() * 1.05]
+    assert pick_loose["n_leaves"] == eligible["n_leaves"].min()
+
+
+def test_negative_tolerance_rejected():
+    df = _seasonal_df(60)
+    with pytest.raises(ValueError, match="tolerance"):
+        tune_decision_tree(df, df, FEATURES, [2], [1], tolerance=-0.1)

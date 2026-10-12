@@ -24,9 +24,54 @@ import pandas as pd
 _SPLIT_COLUMNS = {"floorspaceid", "timestamp", "target_timestamp"}
 
 
+def _check_fractions(fractions) -> None:
+    if len(fractions) != 3 or any(f <= 0 for f in fractions) or abs(sum(fractions) - 1) > 1e-9:
+        raise ValueError(f"fractions must be three positive numbers summing to 1, got {fractions!r}")
+
+
+def _check_split_columns(dataset: pd.DataFrame) -> None:
+    missing = _SPLIT_COLUMNS - set(dataset.columns)
+    if missing:
+        raise ValueError(f"dataset is missing required columns: {sorted(missing)}")
+
+
+def split_boundaries(
+    dataset: pd.DataFrame,
+    fractions: tuple[float, float, float] = (0.6, 0.2, 0.2),
+) -> dict:
+    """Find each room's train/validation and validation/test cut times.
+
+    Computing the cut times once and reusing them (see :func:`chronological_split`) keeps
+    the validation window identical across experiments that change the data preparation,
+    so their scores can be compared fairly.
+
+    Args:
+        dataset: Output of ``build_supervised_dataset``.
+        fractions: Share of each room's rows (in time order) for train, validation, test.
+
+    Returns:
+        Dict mapping each ``floorspaceid`` to ``(b1, b2)``: validation starts at ``b1`` and
+        the test period starts at ``b2``.
+
+    Raises:
+        ValueError: If ``fractions`` is invalid or required columns are missing.
+    """
+    _check_fractions(fractions)
+    _check_split_columns(dataset)
+    bounds = {}
+    for room, g in dataset.groupby("floorspaceid"):
+        ts = g["timestamp"].sort_values().to_numpy()
+        n = len(ts)
+        b1 = ts[min(n - 1, int(n * fractions[0]))]
+        b2 = ts[min(n - 1, int(n * (fractions[0] + fractions[1])))]
+        bounds[room] = (pd.Timestamp(b1), pd.Timestamp(b2))
+    return bounds
+
+
 def chronological_split(
     dataset: pd.DataFrame,
     fractions: tuple[float, float, float] = (0.6, 0.2, 0.2),
+    boundaries: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Split a supervised dataset into train, validation and test sets by time.
 
@@ -34,28 +79,28 @@ def chronological_split(
         dataset: Output of ``build_supervised_dataset`` (needs ``floorspaceid``,
             ``timestamp`` and ``target_timestamp``).
         fractions: Share of each room's rows (by time order) for train, validation and
-            test. Must be three positive numbers summing to 1.
+            test. Must be three positive numbers summing to 1. Ignored if ``boundaries``
+            is given.
+        boundaries: Optional per-room cut times from :func:`split_boundaries`, used to
+            reproduce an earlier split on a differently prepared dataset.
 
     Returns:
         ``(train, validation, test)`` DataFrames. Per room, all train targets precede the
         validation period, and all validation targets precede the test period.
 
     Raises:
-        ValueError: If ``fractions`` is invalid or required columns are missing.
+        ValueError: If ``fractions`` is invalid, required columns are missing, or
+            ``boundaries`` lacks a room present in ``dataset``.
     """
-    if len(fractions) != 3 or any(f <= 0 for f in fractions) or abs(sum(fractions) - 1) > 1e-9:
-        raise ValueError(f"fractions must be three positive numbers summing to 1, got {fractions!r}")
-    missing = _SPLIT_COLUMNS - set(dataset.columns)
-    if missing:
-        raise ValueError(f"dataset is missing required columns: {sorted(missing)}")
+    _check_split_columns(dataset)
+    if boundaries is None:
+        boundaries = split_boundaries(dataset, fractions)
 
     train_parts, val_parts, test_parts = [], [], []
-    for _, g in dataset.groupby("floorspaceid"):
-        g = g.sort_values("timestamp")
-        ts = g["timestamp"].to_numpy()
-        n = len(ts)
-        b1 = ts[min(n - 1, int(n * fractions[0]))]
-        b2 = ts[min(n - 1, int(n * (fractions[0] + fractions[1])))]
+    for room, g in dataset.groupby("floorspaceid"):
+        if room not in boundaries:
+            raise ValueError(f"boundaries has no entry for floorspaceid {room!r}")
+        b1, b2 = boundaries[room]
         train_parts.append(g[g["target_timestamp"] < b1])
         val_parts.append(g[(g["timestamp"] >= b1) & (g["target_timestamp"] < b2)])
         test_parts.append(g[g["timestamp"] >= b2])

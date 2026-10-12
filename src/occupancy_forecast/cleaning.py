@@ -44,6 +44,11 @@ def _check_positive_int(name: str, value) -> None:
         raise ValueError(f"{name} must be a positive integer, got {value!r}")
 
 
+def _check_non_negative_int(name: str, value) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+
+
 def _check_non_negative_number(name: str, value) -> None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         raise ValueError(f"{name} must be a non-negative number, got {value!r}")
@@ -223,6 +228,7 @@ def fill_gaps(
         quiet_threshold: Headcount (people) at or below which a preceding value counts
             as "room empty".
         max_quiet_bins: Longest gap (bins) to fill with zero. 288 bins = 1 day at 5 min.
+            Use 0 to switch the zero-fill rule off (for sensitivity testing).
 
     Returns:
         Copy of ``df`` with added columns ``headcount`` (float, people) and
@@ -233,7 +239,7 @@ def fill_gaps(
         ValueError: If parameters are invalid or ``value_col`` is missing.
     """
     _check_positive_int("max_interp_bins", max_interp_bins)
-    _check_positive_int("max_quiet_bins", max_quiet_bins)
+    _check_non_negative_int("max_quiet_bins", max_quiet_bins)
     _check_non_negative_number("quiet_threshold", quiet_threshold)
     if value_col not in df.columns:
         raise ValueError(f"column {value_col!r} not found in df")
