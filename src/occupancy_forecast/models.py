@@ -188,12 +188,14 @@ def tune_decision_tree(
     max_depths: list,
     min_samples_leaf_values: list,
     random_state: int = 0,
+    tolerance: float = 0.005,
 ) -> tuple[pd.DataFrame, dict]:
     """Grid-search tree complexity, comparing training and validation error.
 
     Overfitting shows up as training RMSE falling while validation RMSE stops improving
-    or rises. The chosen setting is the one with the lowest validation RMSE (ties go to
-    the tree with fewer leaves).
+    or rises. Among settings whose validation RMSE is within ``tolerance`` (a fraction) of
+    the best, the one with the fewest leaves is chosen: differences smaller than the
+    validation noise should not decide between a small and a large tree.
 
     Args:
         train: Training rows.
@@ -202,19 +204,25 @@ def tune_decision_tree(
         max_depths: ``max_depth`` values to try (``None`` allowed).
         min_samples_leaf_values: ``min_samples_leaf`` values to try.
         random_state: Seed passed to each tree.
+        tolerance: Allowed relative increase in validation RMSE over the best setting
+            (0.005 = 0.5 %). Use 0 to always pick the lowest validation RMSE.
 
     Returns:
         ``(results, best)``: ``results`` has one row per setting with ``max_depth``,
-        ``min_samples_leaf``, ``n_leaves``, ``train_rmse``, ``val_rmse``, ``val_mae`` and
-        ``fit_seconds``; ``best`` is ``{"max_depth": ..., "min_samples_leaf": ...}``.
+        ``min_samples_leaf``, ``n_leaves``, ``train_rmse``, ``val_rmse``, ``val_mae``,
+        ``fit_seconds`` and ``selected`` (True for the chosen row); ``best`` is
+        ``{"max_depth": ..., "min_samples_leaf": ...}``.
 
     Raises:
-        ValueError: If a grid is empty or either dataset is empty.
+        ValueError: If a grid is empty, either dataset is empty, or ``tolerance`` is
+            negative.
     """
     if not max_depths or not min_samples_leaf_values:
         raise ValueError("max_depths and min_samples_leaf_values must be non-empty")
     if train.empty or val.empty:
         raise ValueError("train and val must be non-empty")
+    if tolerance < 0:
+        raise ValueError(f"tolerance must be >= 0, got {tolerance!r}")
 
     x_tr, y_tr = train[features], train["target"].to_numpy(dtype=float)
     x_va, y_va = val[features], val["target"].to_numpy(dtype=float)
@@ -238,7 +246,10 @@ def tune_decision_tree(
                 "fit_seconds": fit_seconds,
             })
     results = pd.DataFrame(rows)
-    best_row = results.sort_values(["val_rmse", "n_leaves"]).iloc[0]
+    eligible = results[results["val_rmse"] <= results["val_rmse"].min() * (1 + tolerance)]
+    best_idx = eligible.sort_values(["n_leaves", "val_rmse"]).index[0]
+    results["selected"] = results.index == best_idx
+    best_row = results.loc[best_idx]
     depth = best_row["max_depth"]
     best = {
         "max_depth": None if pd.isna(depth) else int(depth),
