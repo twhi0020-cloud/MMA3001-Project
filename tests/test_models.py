@@ -12,6 +12,7 @@ from occupancy_forecast.models import (
     predict_last_week,
     predict_persistence,
     tune_decision_tree,
+    tune_decision_tree_fast,
 )
 
 FEATURES = ["hour_of_day", "lag_0m"]
@@ -145,3 +146,61 @@ def test_negative_tolerance_rejected():
     df = _seasonal_df(60)
     with pytest.raises(ValueError, match="tolerance"):
         tune_decision_tree(df, df, FEATURES, [2], [1], tolerance=-0.1)
+
+
+# ---------- tune_decision_tree_fast ----------
+
+def test_fast_tuning_structure_and_no_duplicate_fits():
+    train, val = _seasonal_df(1200, seed=1), _seasonal_df(300, seed=2)
+    results, best = tune_decision_tree_fast(train, val, FEATURES, stride=2)
+    assert {"stage", "selected", "val_rmse", "n_leaves"} <= set(results.columns)
+    assert results["selected"].sum() == 1
+    assert set(results["stage"]) == {1, 2}
+    assert not results.duplicated(["max_depth", "min_samples_leaf"]).any()
+    assert len(results[results["stage"] == 1]) == 6
+    assert len(results) <= 6 + 9
+    assert set(best) == {"max_depth", "min_samples_leaf"}
+
+
+def test_fast_tuning_stage_two_is_a_neighbourhood_of_the_stage_one_winner():
+    train, val = _seasonal_df(1200, seed=1), _seasonal_df(300, seed=2)
+    results, _ = tune_decision_tree_fast(train, val, FEATURES, stride=1)
+    stage1, stage2 = results[results["stage"] == 1], results[results["stage"] == 2]
+    row = stage1.sort_values(["val_rmse"]).iloc[0]
+    eligible = stage1[stage1["val_rmse"] <= stage1["val_rmse"].min() * 1.005]
+    win = eligible.sort_values(["n_leaves", "val_rmse"]).iloc[0]
+    d0, l0 = int(win["max_depth"]), int(win["min_samples_leaf"])
+    assert set(stage2["max_depth"].astype(int)) <= {max(2, d0 - 2), d0, d0 + 2}
+    assert set(stage2["min_samples_leaf"].astype(int)) <= {max(1, l0 // 4), l0, l0 * 4}
+
+
+def test_fast_tuning_selected_is_simplest_within_tolerance():
+    train, val = _seasonal_df(1200, seed=1), _seasonal_df(300, seed=2)
+    results, _ = tune_decision_tree_fast(train, val, FEATURES, stride=1, tolerance=0.05)
+    eligible = results[results["val_rmse"] <= results["val_rmse"].min() * 1.05]
+    assert results[results["selected"]].iloc[0]["n_leaves"] == eligible["n_leaves"].min()
+
+
+def test_fast_tuning_uses_only_every_stride_th_training_row():
+    train, val = _seasonal_df(1200, seed=1), _seasonal_df(300, seed=2)
+    poisoned = train.copy()
+    poisoned.loc[poisoned.index % 2 == 1, "target"] = 1e6          # odd rows are garbage
+    results, _ = tune_decision_tree_fast(poisoned, val, FEATURES, stride=2)
+    assert results["train_rmse"].max() < 5                          # garbage rows were never used
+    results_all, _ = tune_decision_tree_fast(poisoned, val, FEATURES, stride=1)
+    assert results_all["train_rmse"].max() > 1000                   # they are used when stride=1
+
+
+def test_fast_tuning_validates_inputs():
+    df = _seasonal_df(100)
+    for bad in (0, -1, 2.5, True):
+        with pytest.raises(ValueError, match="stride"):
+            tune_decision_tree_fast(df, df, FEATURES, stride=bad)
+    with pytest.raises(ValueError):
+        tune_decision_tree_fast(df, df, FEATURES, coarse_depths=())
+    with pytest.raises(ValueError, match="positive integers"):
+        tune_decision_tree_fast(df, df, FEATURES, coarse_leaves=(10, 0))
+    with pytest.raises(ValueError):
+        tune_decision_tree_fast(df.iloc[0:0], df, FEATURES)
+    with pytest.raises(ValueError, match="tolerance"):
+        tune_decision_tree_fast(df, df, FEATURES, tolerance=-1)

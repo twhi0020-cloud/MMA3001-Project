@@ -194,3 +194,48 @@ def test_hybrid_errors():
     fitted = SplineAnomalyForecaster().fit(df)
     with pytest.raises(ValueError, match="missing required columns"):
         fitted.predict(df.drop(columns=["timestamp"]))
+
+
+# ---------- padding and profile reuse ----------
+
+def test_short_wrap_matches_full_wrap_for_a_smooth_profile_and_stays_continuous_at_midnight():
+    train = _frame(smooth, noise=0.3, seed=5)
+    probe = pd.DataFrame({"floorspaceid": "A",
+                          "target_timestamp": pd.date_range("2024-06-05", periods=96, freq="15min")})
+    full = SplineProfile("smoothing", pad_hours=24).fit(train).predict(probe)
+    short = SplineProfile("smoothing", pad_hours=3).fit(train).predict(probe)
+    assert 1e-9 < np.abs(full - short).max() < 0.1       # differs a little (so pad_hours is used), but only a little
+    edge = pd.DataFrame({"floorspaceid": "A",
+                         "target_timestamp": pd.to_datetime(["2024-06-05 23:59:30", "2024-06-05 00:00:30"])})
+    both = SplineProfile("cubic", pad_hours=3).fit(train).predict(edge)
+    assert abs(both[0] - both[1]) < 0.2
+    every_minute = pd.DataFrame({"floorspaceid": "A", "target_timestamp": pd.date_range("2024-06-05", periods=1440, freq="min")})
+    assert np.isfinite(SplineProfile("pchip", pad_hours=0.25).fit(train).predict(every_minute)).all()
+
+
+def test_default_wrap_is_the_full_day():
+    train = _frame(smooth, noise=0.2, seed=6)
+    a = SplineProfile("cubic").fit(train)
+    b = SplineProfile("cubic", pad_hours=24.0).fit(train)
+    probe = pd.DataFrame({"floorspaceid": "A", "target_timestamp": pd.date_range("2024-06-05", periods=96, freq="15min")})
+    assert np.array_equal(a.predict(probe), b.predict(probe))
+
+
+@pytest.mark.parametrize("bad", [0, -1, 24.5, True, "3"])
+def test_pad_hours_validation(bad):
+    with pytest.raises(ValueError, match="pad_hours"):
+        SplineProfile(pad_hours=bad)
+
+
+def test_hybrid_reusing_a_fitted_profile_gives_identical_results():
+    rng = np.random.default_rng(4)
+    df = _frame(smooth, weeks=20, noise=0.2)
+    df["lag_0m"] = df["lag_0m"] + rng.normal(0, 1, len(df))
+    separate = SplineAnomalyForecaster(method="pchip").fit(df)
+    shared_profile = SplineProfile("pchip").fit(df)
+    shared = SplineAnomalyForecaster(method="pchip").fit(df, profile=shared_profile)
+    assert shared.profile is shared_profile
+    assert shared.phi_ == pytest.approx(separate.phi_)
+    assert np.array_equal(shared.predict(df), separate.predict(df))
+    with pytest.raises(RuntimeError, match="fitted"):
+        SplineAnomalyForecaster().fit(df, profile=SplineProfile("pchip"))
