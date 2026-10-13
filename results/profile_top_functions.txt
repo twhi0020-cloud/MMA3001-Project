@@ -1,0 +1,26 @@
+         456100 function calls (453046 primitive calls) in 4.413 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1211 to 18 due to restriction <18>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.002    0.002    1.892    1.892 src/occupancy_forecast/cleaning.py:258(clean_occupancy)
+        1    0.000    0.000    1.662    1.662 src/occupancy_forecast/models.py:154(fit_decision_tree)
+        1    0.000    0.000    1.660    1.660 <site-packages>/sklearn/base.py:1319(wrapper)
+        1    0.000    0.000    1.660    1.660 <site-packages>/sklearn/tree/_classes.py:1377(fit)
+        1    1.642    1.642    1.660    1.660 <site-packages>/sklearn/tree/_classes.py:234(_fit)
+        1    0.008    0.008    0.970    0.970 src/occupancy_forecast/cleaning.py:204(fill_gaps)
+        1    0.001    0.001    0.697    0.697 src/occupancy_forecast/cleaning.py:111(cap_spikes)
+        1    0.001    0.001    0.603    0.603 src/occupancy_forecast/features.py:65(build_supervised_dataset)
+        5    0.279    0.056    0.517    0.103 src/occupancy_forecast/cleaning.py:175(_fill_series)
+       20    0.000    0.000    0.486    0.024 <site-packages>/pandas/core/window/rolling.py:538(_apply)
+       20    0.000    0.000    0.486    0.024 <site-packages>/pandas/core/window/rolling.py:444(_apply_columnwise)
+       20    0.000    0.000    0.485    0.024 <site-packages>/pandas/core/window/rolling.py:424(_apply_series)
+       20    0.002    0.000    0.471    0.024 <site-packages>/pandas/core/window/rolling.py:571(homogeneous_func)
+       20    0.444    0.022    0.469    0.023 <site-packages>/pandas/core/window/rolling.py:577(calc)
+       10    0.000    0.000    0.442    0.044 <site-packages>/pandas/core/window/rolling.py:2659(median)
+       10    0.000    0.000    0.442    0.044 <site-packages>/pandas/core/window/rolling.py:1708(median)
+       20    0.000    0.000    0.421    0.021 <site-packages>/pandas/core/indexing.py:917(__setitem__)
+      185    0.002    0.000    0.325    0.002 <site-packages>/pandas/core/internals/managers.py:396(apply)
+
+

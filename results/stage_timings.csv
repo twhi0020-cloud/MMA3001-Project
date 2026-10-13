@@ -1,0 +1,11 @@
+stage,seconds,peak_python_mb
+1 resample raw CSV (DuckDB),8.674260162999985,74.970927
+"2 clean (grid, spikes, gaps)",1.7588250080000307,143.366379
+3 build features and targets,0.5125816280000208,215.763097
+4 chronological split,0.23255996300002835,166.915212
+5 seasonal average (fit),0.17663364100002354,70.290341
+6 linear regression (fit),0.09431100699998751,74.991066
+"7 decision tree (1 fit, d8 leaf200)",1.55725768100001,49.994111
+8 spline smoothing profile (fit),4.489335847000007,76.54045
+"9 spline hybrid (fit, own profile)",5.267626843999949,103.597516
+"10 spline hybrid (fit, reusing profile)",0.36172537999999577,103.348426

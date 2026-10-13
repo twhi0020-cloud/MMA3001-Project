@@ -1,0 +1,5 @@
+operation,est_operations,est_bytes,measured_seconds,achieved_gops,percent_of_peak,arithmetic_intensity,regime,roofline_min_seconds,note
+decision tree fit (d8),832620678.290221,666368000.0,1.542748918999905,0.5396994080086418,0.8424032353928416,1.249490789308942,memory-bound,0.08359232343776875,"n=520,600, p=8, depth 8; comparisons/branching, not pure FLOPs"
+"decision tree fit (d20, leaf 1)",2081551695.7255526,1665920000.0,3.482327355000052,0.5977472774742975,0.9330086952467955,1.249490789308942,memory-bound,0.2089808085944219,deepest tuning-grid tree; estimate treats every level as full size
+linear regression fit,84337686.0,,0.11220216100002744,0.7516583036219718,1.1732445459175025,,n/a,,normal equations; trivial cost
+"smoothing splines, all room/day profiles",22118400.0,,4.359506131999979,0.005073602222427177,0.007919258134892245,,n/a,,40 curves of 288 padded knots; time includes slot averaging
