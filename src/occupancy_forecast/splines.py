@@ -66,11 +66,20 @@ def _build_interpolant(method: str, x: np.ndarray, y: np.ndarray, w: np.ndarray)
     return make_smoothing_spline(x, y, w=w, lam=None)  # lam=None -> GCV
 
 
-def _fit_curve(method: str, slot_hours: np.ndarray, means: np.ndarray, counts: np.ndarray):
-    """Fit one periodic profile: repeat the 24 h data one day either side, then interpolate."""
-    x = np.concatenate([slot_hours - 24.0, slot_hours, slot_hours + 24.0])
-    y = np.tile(means, 3)
-    w = np.tile(counts.astype(float), 3)
+def _fit_curve(method: str, slot_hours: np.ndarray, means: np.ndarray, counts: np.ndarray, pad_knots: int | None = None):
+    """Fit one periodic profile.
+
+    The 24 h data is wrapped around midnight by repeating its last ``pad_knots`` points before
+    the start (shifted by -24 h) and its first ``pad_knots`` points after the end (+24 h).
+    ``pad_knots=None`` repeats the whole day on each side. Fitting cost grows with the number
+    of knots, so a short wrap is cheaper; it only needs to reach beyond midnight so that every
+    query lies inside the fitted range.
+    """
+    n = len(slot_hours)
+    k = n if pad_knots is None else max(1, min(n, pad_knots))
+    x = np.concatenate([slot_hours[n - k:] - 24.0, slot_hours, slot_hours[:k] + 24.0])
+    y = np.concatenate([means[n - k:], means, means[:k]])
+    w = np.concatenate([counts[n - k:], counts, counts[:k]]).astype(float)
     return _build_interpolant(method, x, y, w)
 
 
@@ -85,13 +94,17 @@ class SplineProfile:
             (two profiles per room, with more data per slot).
         min_knots: Minimum number of populated slots needed to fit a curve for a group
             (at least 5). Smaller groups fall back to the room-level profile.
+        pad_hours: How much of the day is repeated either side of midnight before fitting
+            (greater than 0 and at most 24). 24 repeats the whole day; a shorter wrap makes
+            fitting cheaper (cost grows with the number of knots) and, for a smooth profile,
+            changes the curve very little away from midnight.
 
     Raises:
         ValueError: If an argument is invalid.
     """
 
     def __init__(self, method: str = "smoothing", slot_minutes: int = 15,
-                 day_grouping: str = "dow", min_knots: int = 8):
+                 day_grouping: str = "dow", min_knots: int = 8, pad_hours: float = 24.0):
         if method not in SPLINE_METHODS:
             raise ValueError(f"method must be one of {SPLINE_METHODS}, got {method!r}")
         if isinstance(slot_minutes, bool) or not isinstance(slot_minutes, int) \
@@ -101,6 +114,9 @@ class SplineProfile:
             raise ValueError(f"day_grouping must be one of {DAY_GROUPINGS}, got {day_grouping!r}")
         if isinstance(min_knots, bool) or not isinstance(min_knots, int) or min_knots < _MIN_KNOTS_FLOOR:
             raise ValueError(f"min_knots must be an integer >= {_MIN_KNOTS_FLOOR}, got {min_knots!r}")
+        if isinstance(pad_hours, bool) or not isinstance(pad_hours, (int, float)) or not 0 < pad_hours <= 24:
+            raise ValueError(f"pad_hours must be a number in (0, 24], got {pad_hours!r}")
+        self.pad_hours = float(pad_hours)
         self.method = method
         self.slot_minutes = slot_minutes
         self.day_grouping = day_grouping
@@ -124,7 +140,9 @@ class SplineProfile:
         if len(stats) < self.min_knots:
             return
         centres = (stats.index.to_numpy() + 0.5) * self.slot_minutes / 60.0
-        self._curves[key] = _fit_curve(self.method, centres, stats["mean"].to_numpy(), stats["count"].to_numpy())
+        pad_knots = int(np.ceil(self.pad_hours * 60.0 / self.slot_minutes))
+        self._curves[key] = _fit_curve(self.method, centres, stats["mean"].to_numpy(),
+                                       stats["count"].to_numpy(), pad_knots)
         self._n_knots[key] = len(stats)
 
     def fit(self, train: pd.DataFrame) -> "SplineProfile":
@@ -247,23 +265,32 @@ class SplineAnomalyForecaster:
         if needed - set(df.columns):
             raise ValueError(f"df is missing required columns: {sorted(needed - set(df.columns))}")
 
-    def fit(self, train: pd.DataFrame) -> "SplineAnomalyForecaster":
+    def fit(self, train: pd.DataFrame, profile: SplineProfile | None = None) -> "SplineAnomalyForecaster":
         """Fit the profile and ``phi`` from training data only.
 
         Args:
             train: Rows with ``floorspaceid``, ``timestamp``, ``target_timestamp``,
                 ``lag_0m`` (current headcount) and ``target``.
+            profile: An already fitted :class:`SplineProfile` (fitted on the same ``train``)
+                to reuse instead of fitting an identical one again. The profile fit is the
+                expensive part, so sharing it halves the cost of fitting both models.
 
         Returns:
             ``self``.
 
         Raises:
             ValueError: If ``train`` is empty or columns are missing.
+            RuntimeError: If ``profile`` is given but has not been fitted.
         """
         self._check(train, {"target"})
         if train.empty:
             raise ValueError("cannot fit on an empty training set")
-        self.profile.fit(train)
+        if profile is not None:
+            if profile._global_mean is None:
+                raise RuntimeError("the supplied profile must be fitted")
+            self.profile = profile
+        else:
+            self.profile.fit(train)
         now = self.profile.evaluate(train["floorspaceid"], train["timestamp"])
         later = self.profile.evaluate(train["floorspaceid"], train["target_timestamp"])
         a = train["lag_0m"].to_numpy(dtype=float) - now

@@ -181,6 +181,45 @@ def fit_decision_tree(
     return model.fit(train[features], train["target"])
 
 
+def _evaluate_settings(train, val, features, settings, random_state) -> pd.DataFrame:
+    """Fit one tree per (max_depth, min_samples_leaf) pair and score it on validation."""
+    x_tr, y_tr = train[features], train["target"].to_numpy(dtype=float)
+    x_va, y_va = val[features], val["target"].to_numpy(dtype=float)
+    rows = []
+    for depth, leaf in settings:
+        t0 = perf_counter()
+        model = DecisionTreeRegressor(
+            max_depth=depth, min_samples_leaf=leaf, random_state=random_state
+        ).fit(x_tr, y_tr)
+        fit_seconds = perf_counter() - t0
+        err_va = model.predict(x_va) - y_va
+        rows.append({
+            "max_depth": depth,
+            "min_samples_leaf": leaf,
+            "n_leaves": int(model.get_n_leaves()),
+            "train_rmse": float(np.sqrt(np.mean((model.predict(x_tr) - y_tr) ** 2))),
+            "val_rmse": float(np.sqrt(np.mean(err_va**2))),
+            "val_mae": float(np.mean(np.abs(err_va))),
+            "fit_seconds": fit_seconds,
+        })
+    return pd.DataFrame(rows)
+
+
+def _select_best(results: pd.DataFrame, tolerance: float) -> tuple[pd.DataFrame, dict]:
+    """Mark the simplest tree within ``tolerance`` of the best validation RMSE."""
+    results = results.reset_index(drop=True)
+    eligible = results[results["val_rmse"] <= results["val_rmse"].min() * (1 + tolerance)]
+    best_idx = eligible.sort_values(["n_leaves", "val_rmse"]).index[0]
+    results["selected"] = results.index == best_idx
+    best_row = results.loc[best_idx]
+    depth = best_row["max_depth"]
+    best = {
+        "max_depth": None if pd.isna(depth) else int(depth),
+        "min_samples_leaf": int(best_row["min_samples_leaf"]),
+    }
+    return results, best
+
+
 def tune_decision_tree(
     train: pd.DataFrame,
     val: pd.DataFrame,
@@ -224,38 +263,76 @@ def tune_decision_tree(
     if tolerance < 0:
         raise ValueError(f"tolerance must be >= 0, got {tolerance!r}")
 
-    x_tr, y_tr = train[features], train["target"].to_numpy(dtype=float)
-    x_va, y_va = val[features], val["target"].to_numpy(dtype=float)
+    settings = [(d, leaf) for d in max_depths for leaf in min_samples_leaf_values]
+    return _select_best(_evaluate_settings(train, val, features, settings, random_state), tolerance)
 
-    rows = []
-    for depth in max_depths:
-        for leaf in min_samples_leaf_values:
-            t0 = perf_counter()
-            model = DecisionTreeRegressor(
-                max_depth=depth, min_samples_leaf=leaf, random_state=random_state
-            ).fit(x_tr, y_tr)
-            fit_seconds = perf_counter() - t0
-            err_va = model.predict(x_va) - y_va
-            rows.append({
-                "max_depth": depth,
-                "min_samples_leaf": leaf,
-                "n_leaves": int(model.get_n_leaves()),
-                "train_rmse": float(np.sqrt(np.mean((model.predict(x_tr) - y_tr) ** 2))),
-                "val_rmse": float(np.sqrt(np.mean(err_va**2))),
-                "val_mae": float(np.mean(np.abs(err_va))),
-                "fit_seconds": fit_seconds,
-            })
-    results = pd.DataFrame(rows)
-    eligible = results[results["val_rmse"] <= results["val_rmse"].min() * (1 + tolerance)]
-    best_idx = eligible.sort_values(["n_leaves", "val_rmse"]).index[0]
-    results["selected"] = results.index == best_idx
-    best_row = results.loc[best_idx]
-    depth = best_row["max_depth"]
-    best = {
-        "max_depth": None if pd.isna(depth) else int(depth),
-        "min_samples_leaf": int(best_row["min_samples_leaf"]),
-    }
-    return results, best
+
+def tune_decision_tree_fast(
+    train: pd.DataFrame,
+    val: pd.DataFrame,
+    features: list[str],
+    stride: int = 4,
+    coarse_depths: tuple = (4, 8, 12),
+    coarse_leaves: tuple = (10, 200),
+    random_state: int = 0,
+    tolerance: float = 0.005,
+) -> tuple[pd.DataFrame, dict]:
+    """Find a good tree with far fewer, cheaper fits than an exhaustive grid.
+
+    Two ideas, each measured against the exhaustive search (see the profiling results):
+
+    1. **Subsample:** tune on every ``stride``-th training row. Tree fit time grows roughly
+       linearly with rows, while validation error flattens out well before all the data is
+       used, so a quarter of the rows usually selects the same tree.
+    2. **Coarse to fine:** try a small coarse grid, then a 3 x 3 neighbourhood around the
+       winner (depth +/- 2, leaf size / 4, x 1, x 4). If the winner sits on the edge of the
+       coarse grid the neighbourhood extends beyond it.
+
+    The returned settings come from fits on the *subsample*; refit the chosen tree on the
+    full ``train`` with :func:`fit_decision_tree`. ``val`` is never subsampled.
+
+    Args:
+        train: Training rows.
+        val: Validation rows (never used to fit).
+        features: Feature column names.
+        stride: Use every ``stride``-th training row for tuning (1 = all rows).
+        coarse_depths: Stage-1 ``max_depth`` values (integers).
+        coarse_leaves: Stage-1 ``min_samples_leaf`` values (integers).
+        random_state: Seed passed to each tree.
+        tolerance: Simplest-tree tolerance, as in :func:`tune_decision_tree`.
+
+    Returns:
+        ``(results, best)`` as for :func:`tune_decision_tree`, with an extra ``stage`` column
+        (1 = coarse, 2 = refinement). No setting is fitted twice.
+
+    Raises:
+        ValueError: If ``stride`` is not a positive integer, a coarse grid is empty or contains
+            non-integers, either dataset is empty, or ``tolerance`` is negative.
+    """
+    if isinstance(stride, bool) or not isinstance(stride, int) or stride < 1:
+        raise ValueError(f"stride must be a positive integer, got {stride!r}")
+    if not coarse_depths or not coarse_leaves:
+        raise ValueError("coarse_depths and coarse_leaves must be non-empty")
+    if any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in (*coarse_depths, *coarse_leaves)):
+        raise ValueError("coarse grid values must be positive integers")
+    if train.empty or val.empty:
+        raise ValueError("train and val must be non-empty")
+    if tolerance < 0:
+        raise ValueError(f"tolerance must be >= 0, got {tolerance!r}")
+
+    sub = train.iloc[::stride]
+    stage1 = [(d, leaf) for d in coarse_depths for leaf in coarse_leaves]
+    r1 = _evaluate_settings(sub, val, features, stage1, random_state)
+    _, best1 = _select_best(r1, tolerance)
+
+    d0, l0 = best1["max_depth"], best1["min_samples_leaf"]
+    depths = sorted({max(2, d0 - 2), d0, d0 + 2})
+    leaves = sorted({max(1, l0 // 4), l0, l0 * 4})
+    stage2 = [(d, leaf) for d in depths for leaf in leaves if (d, leaf) not in set(stage1)]
+    r2 = _evaluate_settings(sub, val, features, stage2, random_state)
+
+    results = pd.concat([r1.assign(stage=1), r2.assign(stage=2)], ignore_index=True)
+    return _select_best(results, tolerance)
 
 
 def permutation_importance_table(

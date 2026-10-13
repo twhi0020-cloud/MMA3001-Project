@@ -219,12 +219,13 @@ def run_condition(
         t0 = perf_counter()
         cfg = dict(spline_config or {})
         hybrid_method = cfg.pop("hybrid_method", "smoothing")
-        diag_parts = []
+        diag_parts, profiles = [], {}
         for m in SPLINE_METHODS:
-            profile = SplineProfile(m, **cfg).fit(train)
-            out[f"pred_spline_{m}"] = profile.predict(val)
-            diag_parts.append(profile.diagnostics().assign(method=m))
-        hybrid = SplineAnomalyForecaster(method=hybrid_method, **cfg).fit(train)
+            profiles[m] = SplineProfile(m, **cfg).fit(train)
+            out[f"pred_spline_{m}"] = profiles[m].predict(val)
+            diag_parts.append(profiles[m].diagnostics().assign(method=m))
+        # the hybrid reuses the profile already fitted for its method (identical, and costly)
+        hybrid = SplineAnomalyForecaster(method=hybrid_method, **cfg).fit(train, profile=profiles.get(hybrid_method))
         out["pred_spline_hybrid"] = hybrid.predict(val)
         phi = hybrid.phi_
         diagnostics = pd.concat(diag_parts, ignore_index=True)
