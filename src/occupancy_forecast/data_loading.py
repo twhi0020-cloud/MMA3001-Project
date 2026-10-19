@@ -22,6 +22,77 @@ import pandas as pd
 
 REQUIRED_COLUMNS = {"floorspaceid", "headcount", "collecteddate"}
 LOCAL_TZ = "Australia/Melbourne"
+_OFFSET = r"(?:Z|[+-]\d{2}(?::?\d{2})?)$"
+
+
+def to_local_time(timestamps: pd.Series, tz: str = LOCAL_TZ) -> pd.Series:
+    """Convert timestamps that carry a UTC offset to naive local wall-clock time.
+
+    Args:
+        timestamps: Strings such as ``"2024-03-01 09:00:02+11"`` (an offset is required) or
+            timezone-aware datetimes.
+        tz: IANA timezone to convert to.
+
+    Returns:
+        Naive local datetimes (no timezone attached).
+
+    Raises:
+        ValueError: If a value has no UTC offset (it would be ambiguous), or cannot be parsed.
+    """
+    if pd.api.types.is_datetime64_any_dtype(timestamps):
+        if timestamps.dt.tz is None:
+            raise ValueError("timestamps must include a UTC offset (got timezone-naive datetimes)")
+        return timestamps.dt.tz_convert(tz).dt.tz_localize(None)
+    as_text = timestamps.astype(str)
+    if not as_text.str.contains(_OFFSET, regex=True).all():
+        raise ValueError("timestamps must include a UTC offset, e.g. '2024-03-01 09:00:02+11'")
+    try:
+        parsed = pd.to_datetime(as_text, utc=True, format="ISO8601")
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"could not parse timestamps: {exc}") from exc
+    return parsed.dt.tz_convert(tz).dt.tz_localize(None)
+
+
+def bin_readings(readings: pd.DataFrame, bin_minutes: int = 5, tz: str = LOCAL_TZ) -> pd.DataFrame:
+    """Aggregate in-memory sensor readings into fixed-width local-time bins.
+
+    The in-memory counterpart of :func:`resample_occupancy` (same output), for the small
+    amounts of recent data used when forecasting; ``resample_occupancy`` is for the large file.
+
+    Args:
+        readings: Rows with ``floorspaceid``, ``headcount`` (people) and ``collecteddate``
+            (timestamp with UTC offset).
+        bin_minutes: Bin width in minutes (positive integer).
+        tz: IANA timezone used for local time.
+
+    Returns:
+        DataFrame sorted by (floorspaceid, timestamp) with ``floorspaceid``, ``timestamp``
+        (bin start, naive local), ``mean_headcount`` and ``n_obs``.
+
+    Raises:
+        ValueError: If ``bin_minutes`` is invalid, columns are missing, or timestamps are
+            invalid (see :func:`to_local_time`).
+    """
+    if not isinstance(bin_minutes, int) or isinstance(bin_minutes, bool) or bin_minutes <= 0:
+        raise ValueError(f"bin_minutes must be a positive integer, got {bin_minutes!r}")
+    missing = REQUIRED_COLUMNS - set(readings.columns)
+    if missing:
+        raise ValueError(f"readings is missing required columns: {sorted(missing)}")
+    columns = ["floorspaceid", "timestamp", "mean_headcount", "n_obs"]
+    if readings.empty:
+        return pd.DataFrame(columns=columns)
+
+    local = to_local_time(readings["collecteddate"], tz)
+    grouped = (
+        readings.assign(timestamp=local.dt.floor(f"{bin_minutes}min"))
+        .groupby(["floorspaceid", "timestamp"])["headcount"]
+        .agg(["mean", "count"])
+        .reset_index()
+        .rename(columns={"mean": "mean_headcount", "count": "n_obs"})
+    )
+    grouped["floorspaceid"] = grouped["floorspaceid"].astype(str)
+    grouped["n_obs"] = grouped["n_obs"].astype("int64")
+    return grouped[columns].sort_values(["floorspaceid", "timestamp"]).reset_index(drop=True)
 
 
 def resample_occupancy(
