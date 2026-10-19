@@ -1,3 +1,7 @@
+# Loose requirements: the MINIMUM versions the project is intended to work with.
+# These lower bounds have not been tested; the code has only been run on the exact versions in
+# requirements-lock.txt. Use the lock file to reproduce the results exactly:
+#     pip install -r requirements-lock.txt
 duckdb>=1.0
 pandas>=2.0
 pytz>=2024.1
@@ -12,3 +16,5 @@ pytest>=8.0
 pdoc>=14.0
 jupyter>=1.0
 nbformat>=5.9
+pytest-cov>=7.0
+pytest-html>=4.0

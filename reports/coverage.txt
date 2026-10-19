@@ -1,0 +1,20 @@
+Line coverage of src/occupancy_forecast by the test suite (pytest-cov).
+Run: 277 passed in 60.86s (0:01:00); Python 3.12.3.
+'Missing' lists the line numbers no test executes (mostly defensive branches).
+
+Name                                     Stmts   Miss  Cover   Missing
+----------------------------------------------------------------------
+src/occupancy_forecast/__init__.py           0      0   100%
+src/occupancy_forecast/audit.py             64      3    95%   127, 135, 174
+src/occupancy_forecast/cleaning.py         121      0   100%
+src/occupancy_forecast/data_loading.py      54      0   100%
+src/occupancy_forecast/experiments.py      118      1    99%   294
+src/occupancy_forecast/features.py          69      1    99%   71
+src/occupancy_forecast/final.py             84      1    99%   233
+src/occupancy_forecast/forecast.py          80      1    99%   74
+src/occupancy_forecast/models.py           110      0   100%
+src/occupancy_forecast/profiling.py        115      9    92%   109-116, 382
+src/occupancy_forecast/splines.py          138      2    99%   141, 207
+src/occupancy_forecast/validation.py        63      0   100%
+----------------------------------------------------------------------
+TOTAL                                     1016     18    98%

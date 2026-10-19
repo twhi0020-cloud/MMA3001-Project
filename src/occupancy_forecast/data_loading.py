@@ -20,7 +20,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-REQUIRED_COLUMNS = {"floorspaceid", "headcount", "collecteddate"}
+REQUIRED_COLUMNS = ("floorspaceid", "headcount", "collecteddate")   # a tuple, so documentation output is stable
 LOCAL_TZ = "Australia/Melbourne"
 _OFFSET = r"(?:Z|[+-]\d{2}(?::?\d{2})?)$"
 
@@ -75,7 +75,7 @@ def bin_readings(readings: pd.DataFrame, bin_minutes: int = 5, tz: str = LOCAL_T
     """
     if not isinstance(bin_minutes, int) or isinstance(bin_minutes, bool) or bin_minutes <= 0:
         raise ValueError(f"bin_minutes must be a positive integer, got {bin_minutes!r}")
-    missing = REQUIRED_COLUMNS - set(readings.columns)
+    missing = set(REQUIRED_COLUMNS) - set(readings.columns)
     if missing:
         raise ValueError(f"readings is missing required columns: {sorted(missing)}")
     columns = ["floorspaceid", "timestamp", "mean_headcount", "n_obs"]
@@ -135,7 +135,7 @@ def resample_occupancy(
     try:
         source = "read_csv_auto(?)"
         cols = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {source}", [str(path)]).fetchall()}
-        missing = REQUIRED_COLUMNS - cols
+        missing = set(REQUIRED_COLUMNS) - cols
         if missing:
             raise ValueError(f"CSV is missing required columns: {sorted(missing)}")
 
