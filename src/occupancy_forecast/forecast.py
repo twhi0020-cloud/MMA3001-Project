@@ -52,8 +52,8 @@ from occupancy_forecast.features import (
     forecast_features,
 )
 
-BUNDLE_KEYS = {"model", "features", "horizon_minutes", "bin_minutes", "lags_minutes",
-               "rolling_minutes", "feature_ranges", "params"}
+BUNDLE_KEYS = ("model", "features", "horizon_minutes", "bin_minutes", "lags_minutes",
+               "rolling_minutes", "feature_ranges", "params")   # a tuple, so documentation output is stable
 OUTPUT_COLUMNS = ["floorspaceid", "as_of", "forecast_for", "predicted_headcount",
                   "current_headcount", "status", "outside_training_range"]
 
@@ -81,7 +81,7 @@ def make_bundle(models, bin_minutes: int = 5, lags_minutes=DEFAULT_LAGS_MINUTES,
 def _validate_bundle(bundle) -> dict:
     if not isinstance(bundle, dict):
         raise ValueError("model must be a bundle dict or a path to a saved bundle")
-    missing = BUNDLE_KEYS - set(bundle)
+    missing = set(BUNDLE_KEYS) - set(bundle)
     if missing:
         raise ValueError(f"model bundle is missing keys: {sorted(missing)}")
     expected = feature_names(tuple(bundle["lags_minutes"]), tuple(bundle["rolling_minutes"]))

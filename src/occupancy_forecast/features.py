@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-REQUIRED_COLUMNS = {"floorspaceid", "timestamp", "headcount", "fill_status"}
+REQUIRED_COLUMNS = ("floorspaceid", "timestamp", "headcount", "fill_status")   # a tuple, so documentation output is stable
 DEFAULT_LAGS_MINUTES = (0, 15, 30, 60)
 DEFAULT_ROLLING_MINUTES = (30, 60)
 CALENDAR_FEATURES = ["hour_of_day", "day_of_week"]
@@ -63,7 +63,7 @@ def _bins(name: str, minutes: int, bin_minutes: int, minimum: int) -> int:
 
 
 def _check_clean_frame(clean_df: pd.DataFrame, bin_minutes: int, need_status: bool = True) -> pd.DataFrame:
-    needed = REQUIRED_COLUMNS if need_status else REQUIRED_COLUMNS - {"fill_status"}
+    needed = set(REQUIRED_COLUMNS) if need_status else set(REQUIRED_COLUMNS) - {"fill_status"}
     missing = needed - set(clean_df.columns)
     if missing:
         raise ValueError(f"clean_df is missing required columns: {sorted(missing)}")
