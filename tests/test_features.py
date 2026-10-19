@@ -110,3 +110,57 @@ def test_invalid_arguments_and_inputs_raise():
 
 def test_feature_names_follow_settings():
     assert feature_names((0, 10), (20,)) == ["lag_0m", "lag_10m", "roll_mean_20m", "hour_of_day", "day_of_week"]
+
+
+# ---------- forecast_features (live use) ----------
+
+from occupancy_forecast.features import forecast_features  # noqa: E402
+
+
+def _noisy_clean(n=200, rooms=("A", "B"), seed=0):
+    rng = np.random.default_rng(seed)
+    return pd.concat([_clean(r, n=n, values=np.clip(3 + rng.normal(0, 1, n), 0, None)) for r in rooms], ignore_index=True)
+
+
+def test_live_features_equal_the_training_row_for_the_same_time():
+    """No training/serving skew: the live feature vector at t is the training row at t."""
+    clean = _noisy_clean()
+    dataset = build_supervised_dataset(clean, horizon_minutes=30)
+    for t in (T0 + pd.Timedelta(minutes=5 * 40), T0 + pd.Timedelta(minutes=5 * 120)):
+        live = forecast_features(clean, as_of=t, horizon_minutes=30)
+        assert live["complete"].all() and set(live["floorspaceid"]) == {"A", "B"}
+        train_rows = dataset[dataset["timestamp"] == t].set_index("floorspaceid")
+        live = live.set_index("floorspaceid")
+        cols = feature_names()
+        pd.testing.assert_frame_equal(live[cols].sort_index(), train_rows[cols].sort_index(), check_dtype=False)
+        assert (live["target_timestamp"] == t + pd.Timedelta(minutes=30)).all()
+
+
+def test_live_features_ignore_data_after_as_of():
+    clean = _noisy_clean()
+    t = T0 + pd.Timedelta(minutes=5 * 60)
+    altered = clean.copy()
+    altered.loc[altered["timestamp"] > t, "headcount"] = 999.0
+    a = forecast_features(clean, as_of=t)
+    b = forecast_features(altered, as_of=t)
+    pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
+
+
+def test_live_features_flag_short_history_as_incomplete():
+    live = forecast_features(_noisy_clean(n=200), as_of=T0 + pd.Timedelta(minutes=5 * 5))   # only 6 bins of history
+    assert not live["complete"].any()
+    gap = _noisy_clean(n=200)
+    gap.loc[(gap["floorspaceid"] == "A") & (gap.index == 58), "headcount"] = np.nan
+    live = forecast_features(gap, as_of=T0 + pd.Timedelta(minutes=5 * 60)).set_index("floorspaceid")
+    assert not live.loc["A", "complete"] and live.loc["B", "complete"]
+
+
+def test_live_features_validation():
+    clean = _noisy_clean()
+    assert forecast_features(clean, as_of=T0 - pd.Timedelta(days=1)).empty
+    with pytest.raises(ValueError, match="multiple"):
+        forecast_features(clean, as_of=T0, horizon_minutes=32)
+    with pytest.raises(ValueError, match="missing required columns"):
+        forecast_features(clean.drop(columns=["headcount"]), as_of=T0)
+    with pytest.raises(ValueError, match="regular"):
+        forecast_features(clean.drop(index=10), as_of=T0 + pd.Timedelta(minutes=5 * 100))
