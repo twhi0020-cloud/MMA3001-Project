@@ -62,6 +62,48 @@ def _bins(name: str, minutes: int, bin_minutes: int, minimum: int) -> int:
     return minutes // bin_minutes
 
 
+def _check_clean_frame(clean_df: pd.DataFrame, bin_minutes: int, need_status: bool = True) -> pd.DataFrame:
+    needed = REQUIRED_COLUMNS if need_status else REQUIRED_COLUMNS - {"fill_status"}
+    missing = needed - set(clean_df.columns)
+    if missing:
+        raise ValueError(f"clean_df is missing required columns: {sorted(missing)}")
+    if isinstance(bin_minutes, bool) or not isinstance(bin_minutes, int) or bin_minutes <= 0:
+        raise ValueError(f"bin_minutes must be a positive integer, got {bin_minutes!r}")
+    df = clean_df.sort_values(["floorspaceid", "timestamp"]).reset_index(drop=True)
+    step = pd.Timedelta(minutes=bin_minutes)
+    for room, g in df.groupby("floorspaceid"):
+        if not (g["timestamp"].diff().dropna() == step).all():
+            raise ValueError(
+                f"floorspaceid {room!r} is not on a regular {bin_minutes}-minute grid; "
+                "run clean_occupancy first"
+            )
+    return df
+
+
+def _feature_frame(df, horizon_minutes, bin_minutes, lags_minutes, rolling_minutes) -> pd.DataFrame:
+    """Features for every row of a regular, sorted grid. Shared by training and live use.
+
+    Training and forecasting must compute features with exactly the same code, otherwise the
+    model is served inputs it was not trained on ("training/serving skew").
+    """
+    h = _bins("horizon_minutes", horizon_minutes, bin_minutes, bin_minutes)
+    lag_bins = [(m, _bins("lag", m, bin_minutes, 0)) for m in lags_minutes]
+    roll_bins = [(m, _bins("rolling window", m, bin_minutes, bin_minutes)) for m in rolling_minutes]
+    step = pd.Timedelta(minutes=bin_minutes)
+
+    by_room = df.groupby("floorspaceid")["headcount"]
+    out = pd.DataFrame({"floorspaceid": df["floorspaceid"], "timestamp": df["timestamp"]})
+    out["target_timestamp"] = df["timestamp"] + h * step
+    for minutes, n in lag_bins:
+        out[f"lag_{minutes}m"] = by_room.shift(n)
+    for minutes, n in roll_bins:
+        out[f"roll_mean_{minutes}m"] = by_room.transform(lambda s, n=n: s.rolling(n, min_periods=n).mean())
+    tt = out["target_timestamp"]
+    out["hour_of_day"] = tt.dt.hour + tt.dt.minute / 60.0
+    out["day_of_week"] = tt.dt.dayofweek
+    return out
+
+
 def build_supervised_dataset(
     clean_df: pd.DataFrame,
     horizon_minutes: int = 30,
@@ -98,47 +140,62 @@ def build_supervised_dataset(
         ValueError: If required columns are missing, an argument is invalid, or a room is
             not on a regular grid.
     """
-    missing = REQUIRED_COLUMNS - set(clean_df.columns)
-    if missing:
-        raise ValueError(f"clean_df is missing required columns: {sorted(missing)}")
-    if isinstance(bin_minutes, bool) or not isinstance(bin_minutes, int) or bin_minutes <= 0:
-        raise ValueError(f"bin_minutes must be a positive integer, got {bin_minutes!r}")
-
+    df = _check_clean_frame(clean_df, bin_minutes)
     h = _bins("horizon_minutes", horizon_minutes, bin_minutes, bin_minutes)
-    lag_bins = [(m, _bins("lag", m, bin_minutes, 0)) for m in lags_minutes]
-    roll_bins = [(m, _bins("rolling window", m, bin_minutes, bin_minutes)) for m in rolling_minutes]
     week = _bins("one week", WEEK_MINUTES, bin_minutes, bin_minutes)
-
-    df = clean_df.sort_values(["floorspaceid", "timestamp"]).reset_index(drop=True)
-    step = pd.Timedelta(minutes=bin_minutes)
-    for room, g in df.groupby("floorspaceid"):
-        diffs = g["timestamp"].diff().dropna()
-        if not (diffs == step).all():
-            raise ValueError(
-                f"floorspaceid {room!r} is not on a regular {bin_minutes}-minute grid; "
-                "run clean_occupancy first"
-            )
+    out = _feature_frame(df, horizon_minutes, bin_minutes, lags_minutes, rolling_minutes)
 
     by_room = df.groupby("floorspaceid")["headcount"]
-    out = pd.DataFrame({"floorspaceid": df["floorspaceid"], "timestamp": df["timestamp"]})
-    out["target_timestamp"] = df["timestamp"] + h * step
-
-    for minutes, n in lag_bins:
-        out[f"lag_{minutes}m"] = by_room.shift(n)
-    for minutes, n in roll_bins:
-        out[f"roll_mean_{minutes}m"] = by_room.transform(
-            lambda s, n=n: s.rolling(n, min_periods=n).mean()
-        )
-
-    tt = out["target_timestamp"]
-    out["hour_of_day"] = tt.dt.hour + tt.dt.minute / 60.0
-    out["day_of_week"] = tt.dt.dayofweek
-
     out["target"] = by_room.shift(-h)
     out["target_fill_status"] = df.groupby("floorspaceid")["fill_status"].shift(-h)
     out["baseline_last_week"] = by_room.shift(week - h)
 
     needed = feature_names(lags_minutes, rolling_minutes) + ["target"]
     out = out.dropna(subset=needed).reset_index(drop=True)
+    out["day_of_week"] = out["day_of_week"].astype(int)
+    return out
+
+
+def forecast_features(
+    clean_df: pd.DataFrame,
+    as_of,
+    horizon_minutes: int = 30,
+    bin_minutes: int = 5,
+    lags_minutes: tuple[int, ...] = DEFAULT_LAGS_MINUTES,
+    rolling_minutes: tuple[int, ...] = DEFAULT_ROLLING_MINUTES,
+) -> pd.DataFrame:
+    """Feature rows for a live forecast: one per room, at time ``as_of``, with no target.
+
+    Uses exactly the same feature code as :func:`build_supervised_dataset`, so a live forecast
+    sees the same inputs the model was trained on. Data after ``as_of`` is ignored.
+
+    Args:
+        clean_df: Output of ``clean_occupancy``; each room on a regular grid that reaches
+            ``as_of``.
+        as_of: Bin start time (naive local) at which the forecast is made.
+        horizon_minutes: Forecast horizon in minutes.
+        bin_minutes: Grid spacing in minutes.
+        lags_minutes: Lags used as features.
+        rolling_minutes: Rolling-mean windows used as features.
+
+    Returns:
+        DataFrame with ``floorspaceid``, ``timestamp`` (= ``as_of``), ``target_timestamp``,
+        the feature columns, and ``complete`` (False if any feature is missing, e.g. too
+        little history). Rooms with no row at ``as_of`` are absent.
+
+    Raises:
+        ValueError: If columns are missing, an argument is invalid, or a room is not on a
+            regular grid.
+    """
+    df = _check_clean_frame(clean_df, bin_minutes, need_status=False)
+    as_of = pd.Timestamp(as_of)
+    df = df[df["timestamp"] <= as_of]
+    if df.empty:
+        return pd.DataFrame(columns=["floorspaceid", "timestamp", "target_timestamp",
+                                     *feature_names(lags_minutes, rolling_minutes), "complete"])
+    frame = _feature_frame(df.reset_index(drop=True), horizon_minutes, bin_minutes, lags_minutes, rolling_minutes)
+    out = frame[frame["timestamp"] == as_of].reset_index(drop=True)
+    names = feature_names(lags_minutes, rolling_minutes)
+    out["complete"] = out[names].notna().all(axis=1)
     out["day_of_week"] = out["day_of_week"].astype(int)
     return out

@@ -9,6 +9,9 @@ python scripts/sensitivity.py               # sensitivity_*.csv
 python scripts/spline_comparison.py         # spline_*.csv
 python scripts/profile_pipeline.py --parts stages learning splines cost   # performance tables
 python scripts/profile_pipeline.py --parts tuning loader                   # slower: tuning_strategies, loader_comparison
+python scripts/train_final.py --horizon 30   # fits the final model bundle (test set not used)
+python scripts/check_live_vs_batch.py        # live_vs_batch.csv (validation rows only)
+python scripts/final_evaluation.py           # SEALED test set: run once, after every decision is final
 ```
 
 | File | Contents |
@@ -35,3 +38,10 @@ python scripts/profile_pipeline.py --parts tuning loader                   # slo
 | `prediction_latency.csv` | Microseconds per row for the tree, linear regression and spline hybrid at several batch sizes |
 
 Timings are specific to the machine that produced them (see `machine_benchmark.csv`); the ratios between methods are what carry over.
+| `final_test_main.csv` | **Test set** (opened once): every method at 15 / 30 / 60 min on three row sets (`observed`, `all`, `causal`), with RMSE, MAE, 95% block-bootstrap intervals and improvement over persistence |
+| `final_test_vs_linear.csv` | Test set: tree and spline hybrid compared with linear regression, with 95% intervals |
+| `final_test_by_room.csv` | Test set: RMSE by room for persistence, linear regression, spline hybrid and tree |
+| `final_test_sizes.csv` | Rows per split, rows using look-ahead, and the tree chosen at each horizon |
+| `live_vs_batch.csv` | How closely the live `forecast_headcount()` reproduces the batch pipeline (validation rows, 3 h and 24 h of history) |
+
+The `final_test_*` tables come from `scripts/final_evaluation.py`, whose protocol (horizons, split, models, row sets, bootstrap) was written down before the test rows were first scored and was not changed afterwards.

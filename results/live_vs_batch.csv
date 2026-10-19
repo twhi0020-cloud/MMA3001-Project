@@ -1,0 +1,11 @@
+metric,lookback_3h,lookback_24h
+rows_sampled,300.0,300.0
+live_forecast_available_%,81.0,98.66666666666667
+unavailable_insufficient_history_%,5.333333333333334,1.3333333333333335
+unavailable_no_readings_in_window_%,13.666666666666666,0.0
+identical_to_batch_%_of_available,97.11934156378601,97.63513513513513
+within_0.1_people_%_of_available,97.94238683127571,98.3108108108108
+max_abs_difference_people,0.5539550478019444,0.5539550478019444
+rmse_of_difference_people,0.05251706707883504,0.04758364922225566
+rmse_vs_truth_batch_same_rows,0.8865442242044013,0.8089671435341631
+rmse_vs_truth_live_same_rows,0.8851119046699696,0.8076785407620553

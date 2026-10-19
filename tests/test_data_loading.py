@@ -64,3 +64,51 @@ def test_missing_required_column_raises(tmp_path):
     f.write_text('"id","headcount"\n1,2\n')
     with pytest.raises(ValueError, match="missing required columns"):
         resample_occupancy(f)
+
+
+# ---------- to_local_time / bin_readings ----------
+
+import pandas as pd  # noqa: E402
+
+from occupancy_forecast.data_loading import bin_readings, to_local_time  # noqa: E402
+
+_ROWS = [
+    ("A", 2, "2024-03-01 09:00:02+11"), ("A", 4, "2024-03-01 09:03:00+11"), ("A", 10, "2024-03-01 09:05:01+11"),
+    ("B", 1, "2024-03-01 09:00:00+11"), ("B", 5, "2024-07-02 18:11:42+10"),
+]
+
+
+def _readings():
+    return pd.DataFrame(_ROWS, columns=["floorspaceid", "headcount", "collecteddate"])
+
+
+def test_bin_readings_matches_the_duckdb_loader(tmp_path):
+    f = _write_csv(tmp_path / "occ.csv", _ROWS)
+    pd.testing.assert_frame_equal(bin_readings(_readings(), 5), resample_occupancy(f, 5), check_dtype=False)
+    pd.testing.assert_frame_equal(bin_readings(_readings(), 15), resample_occupancy(f, 15), check_dtype=False)
+
+
+def test_to_local_time_converts_offsets_to_melbourne_wall_clock():
+    out = to_local_time(pd.Series(["2024-03-01 09:00:02+11", "2024-07-02 18:11:42+10", "2024-03-01T00:00:00Z"]))
+    assert out.tolist() == [pd.Timestamp("2024-03-01 09:00:02"), pd.Timestamp("2024-07-02 18:11:42"),
+                            pd.Timestamp("2024-03-01 11:00:00")]
+
+
+def test_to_local_time_accepts_aware_datetimes_and_rejects_naive():
+    aware = pd.Series(pd.to_datetime(["2024-03-01 09:00:00+11:00"]))
+    assert to_local_time(aware).iloc[0] == pd.Timestamp("2024-03-01 09:00:00")
+    with pytest.raises(ValueError, match="UTC offset"):
+        to_local_time(pd.Series(pd.to_datetime(["2024-03-01 09:00:00"])))
+    with pytest.raises(ValueError, match="UTC offset"):
+        to_local_time(pd.Series(["2024-03-01 09:00:00"]))
+    with pytest.raises(ValueError, match="parse"):
+        to_local_time(pd.Series(["not a date+11"]))
+
+
+def test_bin_readings_validation_and_empty_input():
+    with pytest.raises(ValueError, match="missing required columns"):
+        bin_readings(pd.DataFrame({"floorspaceid": ["A"]}))
+    for bad in (0, -5, 2.5, True):
+        with pytest.raises(ValueError):
+            bin_readings(_readings(), bin_minutes=bad)
+    assert bin_readings(_readings().iloc[0:0]).empty
