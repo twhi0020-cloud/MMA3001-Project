@@ -1,6 +1,6 @@
 # Short-horizon room headcount forecasting
 
-**MMA3001 Numerical Methods and Machine Learning, individual project (2026). Author: Toby White.**
+**MMA3001 Numerical Methods and Machine Learning, individual project (2026). Author: Toby White 33880123**
 
 This project forecasts how many people will be in a room 15, 30 or 60 minutes ahead from building occupancy sensor readings, so that building systems such as heating and cooling can respond before people arrive. The data are Monash Smart Infrastructure occupancy sensors: five rooms, about 9.1 million readings, November 2023 to April 2026.
 
